@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<title>Side Scroller</title>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+
+<style>
+    body {
+      font-family: Monospace;
+      background-color: #000;
+      color: #000;
+      margin: 0px;
+      overflow: hidden;
+    }
+    #info {
+      color:white;
+      text-align: center;
+      padding: 10px;
+      z-index: 10;
+      width: 100%;
+      position: absolute;
+
+    }
+    a {
+      text-decoration: underline;
+      cursor: pointer;
+    }
+</style>
+
+</head>
+
+<body>
+<script src="./js/three/three.js"></script>
+<script src="./js/three/TrackballControls.js"></script>
+
+<script id="constants" type="javascript/worker">
+	var playerWidth=2;
+	var playerMass=2;
+	var initialPosition = [0,0,2];
+
+
+</script>
+
+<script id="worker1" type="javascript/worker">    
+    /////////////////////////////////////////////////////////////
+    ///////////////////////Physics thread////////////////////////
+    /////////////////////////////////////////////////////////////
+
+    var world;
+    var playerBody;
+
+    function initPhysics(e){
+
+	    //load CANNON.js
+		var url = e.data.url.replace(/\/[^/]*$/,"/") + "./js/cannon/cannon.js";
+	    importScripts(url);
+
+		world = new CANNON.World();
+		world.gravity.set(0,0,-0.0000001);
+		world.broadphase=new CANNON.NaiveBroadphase();
+
+		var playerShape = new CANNON.Box(new CANNON.Vec3(playerWidth/4,playerWidth/4,playerWidth/4));
+		playerBody = new CANNON.Body({mass:playerMass});
+		playerBody.addShape(playerShape);
+		playerBody.position.set(initialPosition[0], initialPosition[1],initialPosition[2]);
+		world.add(playerBody);
+
+		groundShape = new CANNON.Plane();
+		groundBody = new CANNON.Body({mass:0});
+		groundBody.addShape(groundShape);
+		world.add(groundBody);
+	
+    }
+
+    function applyForce(){
+    	//playerBody.tau.set(0,1,0);
+    }
+
+	self.onmessage = function(e){
+		
+
+		if (e.data.url && !world){
+			initPhysics(e);
+		}
+
+		applyForce();	
+		playerBody.prestep = function(){
+			this.tau.set(100,0,0);
+		}
+
+        for(var i=0; i<100; i++){
+            world.step(10);//steps times dt =elapsed time per iteration
+        }
+
+	    self.postMessage({
+	        position:playerBody.position,
+	    });
+
+
+	}
+
+</script>
+
+<script>
+//////////////////////////////////////////////////////////////////
+////////////////////////// G U I /////////////////////////////////
+//////////////////////////////////////////////////////////////////
+
+
+    //import the constants
+    eval( document.querySelector('#constants').textContent );
+
+    // Create a blob for the inline worker code
+    var blob = new Blob( [  document.querySelector('#constants').textContent,
+                            document.querySelector('#worker1').textContent]);
+    // Create workers
+    var worker = new Worker(window.URL.createObjectURL(blob));
+    worker.postMessage = worker.webkitPostMessage || worker.postMessage;
+
+    //variables in scope of GUI thread
+    var scene, camera, renderer, controls;
+    var player, plane;
+    var skyBox;
+
+    function init(){
+    	//create scene, add camera and renderer
+		scene = new THREE.Scene();
+		camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 500000000000);
+
+		camera.position.y = -5;
+		camera.position.x = -5;
+		camera.position.z= 1;
+		camera.up=new THREE.Vector3(0,0,1);
+		camera.lookAt(new THREE.Vector3(0,0,0));
+
+		renderer = new THREE.WebGLRenderer();
+		renderer.setSize( window.innerWidth, window.innerHeight );
+		document.body.appendChild( renderer.domElement );
+
+		//add lights to the scene
+		var light = new THREE.PointLight( 0xffffff, 1, 30 );
+		light.position.set( 0,0,10 );
+		scene.add( light );
+
+		var light2 = new THREE.AmbientLight( 0x404040 ); // soft white light
+		scene.add( light2 );
+
+		//add skybox to the scene	
+	   	var skyBoxMaterial = new THREE.MeshBasicMaterial({
+            map: THREE.ImageUtils.loadTexture( './images/starchasm.png' ),
+            side: THREE.DoubleSide});
+        skyBox = new THREE.Mesh( new THREE.SphereGeometry( 5e10-1, 32, 32 ), skyBoxMaterial );
+        skyBox.rotation.x=-Math.PI/2;
+        scene.add(skyBox);
+
+        //add mouse trackball controls
+		controls = new THREE.TrackballControls( camera );
+		controls.rotateSpeed = 1.0;
+		controls.zoomSpeed = 1.2;
+		controls.panSpeed = 0.8;
+		controls.noZoom = false;
+		controls.noPan = false;
+		controls.staticMoving = true;
+		controls.dynamicDampingFactor = 0.3;
+		controls.keys = [ 65, 83, 68 ];
+		controls.addEventListener( 'change', render );
+
+        //add player to the scene
+		var playerGeometry = new THREE.BoxGeometry(1,1,1);
+		var starTexture = THREE.ImageUtils.loadTexture("./images/starchasmsquare.jpg");
+		var playerMaterial = new THREE.MeshLambertMaterial( {color:0x434343,specular:0x333333, reflectivity:1});
+		player = new THREE.Mesh( playerGeometry, playerMaterial );
+		player.position.set(initialPosition[0],initialPosition[1],initialPosition[2]);
+		scene.add( player ); 	
+
+		//add plane to the scene
+		var planeGeometry = new THREE.PlaneGeometry( 20000, 2 );
+		var planeMaterial = new THREE.MeshPhongMaterial( {color: 0xBCED91,side: THREE.DoubleSide } );
+		plane = new THREE.Mesh( planeGeometry, planeMaterial );
+		scene.add( plane );
+
+		//add axisHelper to the scene
+		var axisHelper = new THREE.AxisHelper( 5 );
+		scene.add( axisHelper );
+
+		window.addEventListener('keydown', onKeyDown, false);		
+    }
+
+    function onKeyDown(event){
+    	console.log(event.keyCode);	
+    	switch(event.keyCode){
+    		case 87: //up
+    			console.log("a");
+    		case 83: //down
+    			console.log("b");
+    		case 65: //left
+    			console.log("c");
+    		case 68: //right
+    			console.log("d");
+    	}
+    }
+
+
+	worker.onmessage = function(e) {
+		var p = e.data.position;
+        var q = e.data.quaternion;
+        player.position.set(p.x,p.y,p.z);
+        sendDataToWorker();
+	}
+
+
+	function sendDataToWorker(){
+		worker.postMessage({	
+       		url : document.location.href
+		});
+	}
+
+	function animate(){
+		requestAnimationFrame(animate);
+		controls.update();//trackball controls
+		render();
+	
+	}
+
+	function render() {
+		renderer.render(scene, camera);
+	}
+
+	init();
+	animate();
+	sendDataToWorker();
+
+</script>
+
+
+</body>
