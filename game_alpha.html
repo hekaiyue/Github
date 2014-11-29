@@ -37,207 +37,354 @@
 </head>
 
 <body>
-<script src="./js/three/three.js"></script>
-<script src="./js/three/TrackballControls.js"></script>
+	<script type="text/javascript" src="./js/three/three.js"></script>
+	<script type="text/javascript" src="./js/three/TrackballControls.js"></script>
+	<script type="text/javascript" src="./js/physijs/physi.js"></script>
 
-<script id="constants" type="javascript/worker">
-	var playerWidth=2;
-	var playerMass=2;
-	var initialPosition = [0,0,2];
+	<script id="constants" type="javascript/worker">
+		var playerWidth=2;
+		var playerMass=2;
+		var initialPosition = [0,0,2];
+	</script>
 
 
-</script>
+	<script type="text/javascript">
+	'use-strict';
+	//////////////////////////////////////////////////////////////////
+	////////////////////////// G U I /////////////////////////////////
+	//////////////////////////////////////////////////////////////////
 
-<script id="worker1" type="javascript/worker">    
-    /////////////////////////////////////////////////////////////
-    ///////////////////////Physics thread////////////////////////
-    /////////////////////////////////////////////////////////////
 
-    var world;
-    var playerBody;
+	    //import the constants
+	    eval( document.querySelector('#constants').textContent );
 
-    function initPhysics(e){
+	    // Create a blob for the inline worker code
+	    var blob = new Blob( [  document.querySelector('#constants').textContent]);
+	    // Create workers
+	    var worker = new Worker(window.URL.createObjectURL(blob));
+	    worker.postMessage = worker.webkitPostMessage || worker.postMessage;
 
-	    //load CANNON.js
-		var url = e.data.url.replace(/\/[^/]*$/,"/") + "./js/cannon/cannon.js";
-	    importScripts(url);
+	    //variables in scope of GUI thread
+	    var scene, camera, renderer, controls;
+	    var player, table;
+	    var skyBox;
+	    var obstacles=[];
+		var rotating; // in the process of rotation 	    
+		var gameOver;
+		var score;
 
-		world = new CANNON.World();
-		world.gravity.set(0,0,-0.0000001);
-		world.broadphase=new CANNON.NaiveBroadphase();
 
-		var playerShape = new CANNON.Box(new CANNON.Vec3(playerWidth/4,playerWidth/4,playerWidth/4));
-		playerBody = new CANNON.Body({mass:playerMass});
-		playerBody.addShape(playerShape);
-		playerBody.position.set(initialPosition[0], initialPosition[1],initialPosition[2]);
-		world.add(playerBody);
 
-		groundShape = new CANNON.Plane();
-		groundBody = new CANNON.Body({mass:0});
-		groundBody.addShape(groundShape);
-		world.add(groundBody);
-	
-    }
+	    function init(){
+			renderer = new THREE.WebGLRenderer({antialias:true});
+			renderer.setSize( window.innerWidth, window.innerHeight );
+			renderer.shadowMapSoft = true;
+			document.body.appendChild( renderer.domElement );
+			
+			scene = new THREE.Scene();
+			camera = new THREE.PerspectiveCamera( 
+				75, 
+				window.innerWidth / window.innerHeight, 
+				0.1, 
+				500000000000);
+			camera.position.x = -8;
+			camera.position.y = -8;
+			camera.position.z= 3;
+			camera.up=new THREE.Vector3(0,0,1);
+			camera.lookAt(new THREE.Vector3(10,0,0));
 
-    function applyForce(){
-    	//playerBody.tau.set(0,1,0);
-    }
+			//add lights to the scene
+			//var light = new THREE.PointLight( 0xffffff, 1, 30 );
+			//light.position.set( 0,0,10 );
+			//scene.add( light );
+			
+			// directional light
+			var dir_light = new THREE.DirectionalLight( 0xFFFFFF );
+			dir_light.position.set( 20, 30, -5 );
+			dir_light.target.position.copy( scene.position );
+			dir_light.castShadow = true;
+			dir_light.shadowCameraLeft = -30;
+			dir_light.shadowCameraTop = -30;
+			dir_light.shadowCameraRight = 30;
+			dir_light.shadowCameraBottom = 30;
+			dir_light.shadowCameraNear = 20;
+			dir_light.shadowCameraFar = 200;
+			dir_light.shadowBias = -.001;
+			dir_light.shadowMapWidth = dir_light.shadowMapHeight = 2048;
+			dir_light.shadowDarkness = .5;
+			scene.add( dir_light );
 
-	self.onmessage = function(e){
+			var light2 = new THREE.AmbientLight( 0x404040 ); // soft white light
+			scene.add( light2 );
+
+	        //add mouse trackball controls
+			controls = new THREE.TrackballControls( camera );
+			controls.rotateSpeed = 1.0;
+			controls.zoomSpeed = 1.2;
+			controls.panSpeed = 0.8;
+			controls.noZoom = false;
+			controls.noPan = false;
+			controls.staticMoving = true;
+			controls.dynamicDampingFactor = 0.3;
+			controls.keys = [ 65, 83, 68 ];
+			controls.addEventListener( 'change', render );
+			
+			//add skybox to the scene	
+		   	var skyBoxMaterial = new THREE.MeshBasicMaterial({
+	            map: THREE.ImageUtils.loadTexture( './images/starchasm.png' ),
+	            side: THREE.DoubleSide});
+	        skyBox = new THREE.Mesh( new THREE.SphereGeometry( 5e10-1, 32, 32 ), skyBoxMaterial );
+	        skyBox.rotation.x=-Math.PI/2;
+	        scene.add(skyBox);
+	        
+	        //Materials
+	        table_material = new THREE.MeshBasicMaterial({color:0x00AA00});
+	        player_material = new THREE.MeshBasicMaterial({color:0x0000FF});
+	        //obstacle material defined in obstacle
+
+	        //ground
+	        table = new THREE.Mesh(new THREE.BoxGeometry(20000,2,2),table_material);
+	        
+	        scene.add(table);
+
+	        //add player to the scene
+			player = new THREE.Mesh(
+				new THREE.BoxGeometry(playerWidth,playerWidth,playerWidth),
+				player_material
+			);
+			player.position.z = 2;
+			player.jumping = false;
+			player.falling = false;
+			player.ducking = false;
+			player.rising = false;
+			player.move = function(){
+				if (this.jumping && !this.falling){
+					if(player.position.z>=6) { //needs to fall
+						console.log("a");
+						
+						player.jumping = false;
+						player.falling = true;
+					} 
+					else{	//player is jumping up 
+						console.log("b");
+						player.position.z += 0.2;
+						//Math.abs(0.5*(1/player.position.z)); // this model is bad, need more realistic stepwise gravity model
+					} 
+				} else if (this.ducking && !this.rising){ // ducking
+					if (player.position.z<1.2){
+						console.log("c");
+						player.ducking = false;
+						player.rising = true;
+					}
+					else{
+						console.log("d");
+						player.position.z = 0.55;
+					}
+				} else if (this.falling ){ // falling 
+					if (!approx0(player.position.z)){
+						console.log("e");
+						player.position.z-=0.2;	
+					} 
+					else{
+						console.log("f");
+						player.falling = false;				
+						player.position.z = 2;
+					} 
+				} else if (player.rising){
+					if (!approx0(player.position.z)){
+						player.position.z +=0.02;	
+						console.log("g");
+					} 
+					else{
+						console.log("h");
+						player.rising = false;
+						player.position.z = 2;
+					}
+				}
+				this.rotation.y += 0.1;
+			}
+			scene.add(player);
+
+			//add obstacles
+			obstacles = [new THREE.Mesh(new THREE.BoxGeometry(2,2,2),new THREE.MeshBasicMaterial({color:0xff0000}))];
+
+			//originally not rotating 
+			rotating = false;
+
+			//no gameOver yet
+			gameOver = false;
+
+			//add axisHelper to the scene
+			var axisHelper = new THREE.AxisHelper( 5 );
+			scene.add( axisHelper );
+
+			score = 0;
+
+			window.addEventListener('keydown', onKeyDown, false);		
+	    }
+
+	    function approx0(n){
+	    	if (1.8<n && n<2.2) return true;
+	    	else return false;
+	    }
+
+	    function collides(p,o){ // hardcoded for objects of side length 2
+	    	if (Math.abs(o.position.x-p.position.x)<2 &&
+	    		Math.abs(o.position.y-p.position.y)<2 &&
+	    		Math.abs(o.position.z-p.position.z)<2
+	    	) return true;
+	    	else return false;
+	    }
+
+
+	    function manageObstacles(){
+
+    		if (obstacles.length<100){ // make more obstacles at the end of the line
+
+
+    			color = Math.round(Math.random()*255)*65536;
+    			obstacle_material = new THREE.MeshBasicMaterial({color:color});
+	    		var obstacle = new THREE.Mesh(new THREE.BoxGeometry(2,2,2),obstacle_material);
+	    		obstacle.position.set(obstacles[obstacles.length-1].position.x+10,0,0);
+	    		var obstacleUp = Math.random()<.5  //true = up, false = down
+	    		obstacle.position.z = (obstacleUp) ? 3:1;
+	    		
+	    		if (Math.random()<.25){
+					obstacle.position.z *= -1;
+	    		} 
+	    		else if (Math.random()<.5){
+	    			var temp = obstacle.position.z;
+		    		obstacle.position.z = obstacle.position.y;
+		    		obstacle.position.y = temp;
+	    		} 
+	    		else if (Math.random()<.75){
+	    			var temp = obstacle.position.z;
+		    		obstacle.position.z = obstacle.position.y;
+		    		obstacle.position.y = -temp;
+	    		}
+
+	    		obstacles.push(obstacle);
+
+	    		scene.add(obstacle);
+	    	}
+
+	    	for (x in obstacles){ //move obstacles 
+	    		var obstacle = obstacles[x];
+	    		obstacle.position.x -= 0.5;
+	    		if (collides(player,obstacle)) endGame(); // collision detection right here
+	    		if (obstacle.position.y == 0){
+	    			if (obstacle.position.z>2)
+	    				obstacle.rotation.y-=0.1;
+	    			else if (obstacle.position.z<-2) 
+	    				obstacle.rotation.y+=0.1;
+	    		}
+	    		else if (obstacle.position.z == 0){
+	    			if (obstacle.position.y>2)
+						obstacle.rotation.z+=0.1;	
+	    			else if (obstacle.position.y<-2)
+	    					obstacle.rotation.z-=0.1;
+	    		
+	    		}
+
+	    	}
+
+
+
+	    	if (obstacles[0].position.x<-100){ //remove the obstacles that have gone off the page
+	    		var newObstacles =[];
+	    		for (x in obstacles){
+	    			if (x!=0) newObstacles.push(obstacles[x]);
+	    		}
+	    		obstacles = newObstacles;
+	    	}
+
+    	
+	    }
+
+	    function rotateLeft(){
+	    	if (!rotating) rotating = true;
+
+	    }
+
+
+
+	    function onKeyDown(event){
+	    	console.log(event.keyCode);	
+	    	switch(event.keyCode){
+	    		case 38: //up
+	    			if (!player.falling){
+		    			player.jumping = true;
+		    			player.falling = false;
+		    			player.rising = false;
+		    			player.ducking = false;	    				
+	    			}
+	    			console.log("a");
+	    			break;
+	    		case 40: //down
+	    			if (!(player.jumping || player.falling) ){
+	    				player.ducking = true;		
+	    				player.jumping = false;
+	    				player.rising = false;
+	    				player.falling = false;
+	    			} 
+	    			console.log("b");
+	    			break;
+	    		case 37: //left
+	    			rotateLeft();
+	    			console.log("c");
+	    			break;
+	    		case 39: //right
+	    			rotateRight();
+	    			console.log("d");
+	    			break;
+	    		 
+	    	}
+	    }
+
+	    function bother(){
+	    	var confirmIt = confirm("*HINT* The only way you're gonna get a higher score is if you play.")
+	    	if (confirmIt) location.reload();
+	    	
+	    }
+
+	    function endGame(){
+	    	gameOver = true;
+	    	score = String(score);
+	    	var confirmation = confirm("You suck! Game over, score was: " +score +" Press ok to restart, or cancel ...if you're going to just accept defeat.");
+	    	if (confirmation) location.reload();
+	    	else bother();
+
+	    }
+
+		function animate(){
+			requestAnimationFrame(animate);
+			controls.update();//trackball controls
+			render();
 		
-
-		if (e.data.url && !world){
-			initPhysics(e);
 		}
 
-		applyForce();	
-		playerBody.prestep = function(){
-			this.tau.set(100,0,0);
+		function render() {
+			if (!gameOver){
+				score +=1;
+				player.move();
+				manageObstacles();
+				renderer.render(scene, camera);
+			}
 		}
 
-        for(var i=0; i<100; i++){
-            world.step(10);//steps times dt =elapsed time per iteration
-        }
+		function playGame(){
+			var confirmBegin =confirm("LINERUN: Up arrow to jump, Down to duck. Press OK to begin");
+			if (confirmBegin){
+				init();
+				animate();
+			}else{
+				bother();
+			}
+		}
 
-	    self.postMessage({
-	        position:playerBody.position,
-	    });
+		playGame();
 
-
-	}
-
-</script>
-
-<script>
-//////////////////////////////////////////////////////////////////
-////////////////////////// G U I /////////////////////////////////
-//////////////////////////////////////////////////////////////////
-
-
-    //import the constants
-    eval( document.querySelector('#constants').textContent );
-
-    // Create a blob for the inline worker code
-    var blob = new Blob( [  document.querySelector('#constants').textContent,
-                            document.querySelector('#worker1').textContent]);
-    // Create workers
-    var worker = new Worker(window.URL.createObjectURL(blob));
-    worker.postMessage = worker.webkitPostMessage || worker.postMessage;
-
-    //variables in scope of GUI thread
-    var scene, camera, renderer, controls;
-    var player, plane;
-    var skyBox;
-
-    function init(){
-    	//create scene, add camera and renderer
-		scene = new THREE.Scene();
-		camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 500000000000);
-
-		camera.position.y = -5;
-		camera.position.x = -5;
-		camera.position.z= 1;
-		camera.up=new THREE.Vector3(0,0,1);
-		camera.lookAt(new THREE.Vector3(0,0,0));
-
-		renderer = new THREE.WebGLRenderer();
-		renderer.setSize( window.innerWidth, window.innerHeight );
-		document.body.appendChild( renderer.domElement );
-
-		//add lights to the scene
-		var light = new THREE.PointLight( 0xffffff, 1, 30 );
-		light.position.set( 0,0,10 );
-		scene.add( light );
-
-		var light2 = new THREE.AmbientLight( 0x404040 ); // soft white light
-		scene.add( light2 );
-
-		//add skybox to the scene	
-	   	var skyBoxMaterial = new THREE.MeshBasicMaterial({
-            map: THREE.ImageUtils.loadTexture( './images/starchasm.png' ),
-            side: THREE.DoubleSide});
-        skyBox = new THREE.Mesh( new THREE.SphereGeometry( 5e10-1, 32, 32 ), skyBoxMaterial );
-        skyBox.rotation.x=-Math.PI/2;
-        scene.add(skyBox);
-
-        //add mouse trackball controls
-		controls = new THREE.TrackballControls( camera );
-		controls.rotateSpeed = 1.0;
-		controls.zoomSpeed = 1.2;
-		controls.panSpeed = 0.8;
-		controls.noZoom = false;
-		controls.noPan = false;
-		controls.staticMoving = true;
-		controls.dynamicDampingFactor = 0.3;
-		controls.keys = [ 65, 83, 68 ];
-		controls.addEventListener( 'change', render );
-
-        //add player to the scene
-		var playerGeometry = new THREE.BoxGeometry(1,1,1);
-		var starTexture = THREE.ImageUtils.loadTexture("./images/starchasmsquare.jpg");
-		var playerMaterial = new THREE.MeshLambertMaterial( {color:0x434343,specular:0x333333, reflectivity:1});
-		player = new THREE.Mesh( playerGeometry, playerMaterial );
-		player.position.set(initialPosition[0],initialPosition[1],initialPosition[2]);
-		scene.add( player ); 	
-
-		//add plane to the scene
-		var planeGeometry = new THREE.PlaneGeometry( 20000, 2 );
-		var planeMaterial = new THREE.MeshPhongMaterial( {color: 0xBCED91,side: THREE.DoubleSide } );
-		plane = new THREE.Mesh( planeGeometry, planeMaterial );
-		scene.add( plane );
-
-		//add axisHelper to the scene
-		var axisHelper = new THREE.AxisHelper( 5 );
-		scene.add( axisHelper );
-
-		window.addEventListener('keydown', onKeyDown, false);		
-    }
-
-    function onKeyDown(event){
-    	console.log(event.keyCode);	
-    	switch(event.keyCode){
-    		case 87: //up
-    			console.log("a");
-    		case 83: //down
-    			console.log("b");
-    		case 65: //left
-    			console.log("c");
-    		case 68: //right
-    			console.log("d");
-    	}
-    }
-
-
-	worker.onmessage = function(e) {
-		var p = e.data.position;
-        var q = e.data.quaternion;
-        player.position.set(p.x,p.y,p.z);
-        sendDataToWorker();
-	}
-
-
-	function sendDataToWorker(){
-		worker.postMessage({	
-       		url : document.location.href
-		});
-	}
-
-	function animate(){
-		requestAnimationFrame(animate);
-		controls.update();//trackball controls
-		render();
-	
-	}
-
-	function render() {
-		renderer.render(scene, camera);
-	}
-
-	init();
-	animate();
-	sendDataToWorker();
-
-</script>
+	</script>
 
 
 </body>
